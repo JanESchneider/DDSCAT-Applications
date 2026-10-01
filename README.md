@@ -1,5 +1,9 @@
 # DDSCAT-Applications
 
-This repository is for now a copy of a 2 month summer-internship project by Sophia Kugler at the CAU Kiel. The original repository can be founde here: https://github.com/sophiakugler/ddscat-for-beginners 
+This repository is a collection of useful routines for applications of Fortran-code based DDSCAT (https://ddscat.wikidot.com/). Several application routines will be added.
 
-The original repository from the internship project serves as a base for further future development of DDSCAT-applications in some projects.
+## 1. DDSCAT for beginners
+
+This project originates from a two-month internship by Sophia Kugler at CAU Kiel. The original repository can be found here: https://github.com/sophiakugler/ddscat-for-beginners
+
+
