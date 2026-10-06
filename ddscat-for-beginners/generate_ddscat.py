@@ -1,11 +1,9 @@
-'''
+"""
 Generate ddscat.par and prepare a DDSCAT run directory.
 
-Normally, you do NOT need to edit this file
-For a new simulation, change the values in input.toml instead
-Only edit this script if you want to change the structure of the generated
-ddscat.par file or add new DDSCAT options that are not included in input.toml
-'''
+Normally, you do NOT need to edit this file.
+For a new simulation, change the values in input.toml instead.
+"""
 
 from pathlib import Path
 import shutil
@@ -15,48 +13,69 @@ import tomllib
 if len(sys.argv) != 2:
     raise SystemExit("Usage: python3 generate_ddscat.py input.toml")
 
+# ---------------------------------------------------------------------------
+# Read configuration
+# ---------------------------------------------------------------------------
 
-config_file = Path(sys.argv[1])
+config_file = Path(sys.argv[1]).expanduser().resolve()
 
-with open(config_file, "rb") as file:
+with config_file.open("rb") as file:
     cfg = tomllib.load(file)
-
 
 paths = cfg["paths"]
 target = cfg["target"]
-wavelength = cfg["wavelength"]
 radius = cfg["effective_radius"]
+wavelength = cfg["wavelength"]
 numerics = cfg["numerics"]
-polarization = cfg["polarization"]
+orientation = cfg["orientation"]
+output_cfg = cfg["output"]
+scattering = cfg["scattering"]
 
-run_directory = Path(paths["run_directory"]).expanduser()
+# ---------------------------------------------------------------------------
+# Helper for paths
+# ---------------------------------------------------------------------------
+
+def resolve_from_config(path_string: str) -> Path:
+    """Expand '~' and resolve relative paths relative to input.toml."""
+    path = Path(path_string).expanduser()
+    if not path.is_absolute():
+        path = config_file.parent / path
+    return path.resolve()
+
+# ---------------------------------------------------------------------------
+# Prepare run directory
+# ---------------------------------------------------------------------------
+
+run_directory = resolve_from_config(paths["run_directory"])
 run_directory.mkdir(parents=True, exist_ok=True)
 
-# copy material into the run directory.
-material_source = Path(paths["material_file"]).expanduser()
+# ---------------------------------------------------------------------------
+# Copy dielectric file
+# ---------------------------------------------------------------------------
+
+material_source = resolve_from_config(paths["material_file"])
+
+if not material_source.is_file():
+    raise FileNotFoundError(f"Material file not found: {material_source}")
+
 shutil.copy2(material_source, run_directory / "diel.dat")
+
+# ---------------------------------------------------------------------------
+# Target geometry
+# ---------------------------------------------------------------------------
 
 shape = target["shape"].upper()
 
 if shape == "FROM_FILE":
-    # Custom target: copy the supplied shape.dat
-    shape_source = Path(target["shape_file"]).expanduser()
+    shape_source = resolve_from_config(target["shape_file"])
+
+    if not shape_source.is_file():
+        raise FileNotFoundError(f"Shape file not found: {shape_source}")
+
     shutil.copy2(shape_source, run_directory / "shape.dat")
     shape_block = "'FROM_FILE' = CSHAPE\n"
 
 elif shape == "ELLIPSOID":
-    '''
-    For ELLIPSOID, these values are the particle dimensions
-    measured in units of the dipole spacing d.
-    d = distance between neighbouring dipoles on the DDSCAT lattice
-    D = physical diameter of the particle along that axis
-    So D/d tells us approximately how many dipole spacings
-    fit across the particle diameter.
-    [70, 70, 70] -> sphere with D/d ≈ 70 in x, y and z
-    A larger D/d means more dipoles and a finer numerical resolution.
-    It does NOT mean that the particle is 70 um large
-    The physical size is set separately by the effective radius.
-    '''
     sx, sy, sz = target["shape_parameters"]
     shape_block = (
         "'ELLIPSOID' = CSHAPE\n"
@@ -66,74 +85,123 @@ elif shape == "ELLIPSOID":
 else:
     raise ValueError(f"Unsupported target shape: {shape}")
 
+# ---------------------------------------------------------------------------
+# Numerical parameters
+# ---------------------------------------------------------------------------
+
+memory = numerics["memory"]
+
+if len(memory) != 3:
+    raise ValueError("numerics.memory must contain exactly 3 values")
+
+nearfield = 1 if numerics["nearfield"] else 0
+
+# ---------------------------------------------------------------------------
+# Orientation
+# ---------------------------------------------------------------------------
+
+beta = orientation["beta"]
+theta = orientation["theta"]
+phi = orientation["phi"]
+
+for name, values in (("beta", beta), ("theta", theta), ("phi", phi)):
+    if len(values) != 3:
+        raise ValueError(
+            f"orientation.{name} must contain [minimum, maximum, count]"
+        )
+
+# ---------------------------------------------------------------------------
+# Mueller matrix output
+# ---------------------------------------------------------------------------
+
+mueller_elements = output_cfg["mueller_elements"]
+
+if not mueller_elements:
+    raise ValueError(
+        "output.mueller_elements must contain at least one element"
+    )
+
+# ---------------------------------------------------------------------------
+# Scattering directions
+# ---------------------------------------------------------------------------
+
+planes = scattering["planes"]
+
+if not planes:
+    raise ValueError(
+        "scattering.planes must contain at least one scattering plane"
+    )
+
+for plane in planes:
+    if len(plane) != 4:
+        raise ValueError(
+            "Each scattering.plane must contain "
+            "[phi, theta_min, theta_max, theta_step]"
+        )
+
+plane_lines = "\n".join(
+    " ".join(str(value) for value in plane)
+    for plane in planes
+)
+
+# ---------------------------------------------------------------------------
+# Build ddscat.par
+# ---------------------------------------------------------------------------
 
 text = f"""'========== Parameter file for DDSCAT 7.3 =========='
-
 '**** Preliminaries ****'
 'NOTORQ' = CMDTRQ
 '{numerics["solver"]}' = CMDSOL
 '{numerics["fft"]}' = CMDFFT
 '{numerics["polarizability"]}' = CALPHA
 'NOTBIN' = CBINFLAG
-
 '**** Initial Memory Allocation ****'
-100 100 100
-
+{memory[0]} {memory[1]} {memory[2]}
 '**** Target Geometry and Composition ****'
 {shape_block}1 = NCOMP
 'diel.dat'
-
 '**** Additional Nearfield calculation? ****'
-0 = NRFLD
+{nearfield} = NRFLD
 0.0 0.0 0.0 0.0 0.0 0.0
-
 '**** Error Tolerance ****'
 {numerics["tolerance"]} = TOL
-
 '**** Maximum number of iterations ****'
 {numerics["max_iterations"]} = MXITER
-
 '**** Interaction cutoff parameter ****'
 {numerics["gamma"]} = GAMMA
-
 '**** Angular resolution ****'
-{numerics["etasca"]} = ETASCA
-
+{numerics["eta_sca"]} = ETASCA
 '**** Vacuum wavelengths (micron) ****'
 {wavelength["minimum_um"]} {wavelength["maximum_um"]} {wavelength["count"]} '{wavelength["spacing"]}'
-
 '**** Refractive index of ambient medium ****'
-1.0 = NAMBIENT
-
+{numerics["ambient_refractive_index"]} = NAMBIENT
 '**** Effective Radii (micron) ****'
 {radius["minimum_um"]} {radius["maximum_um"]} {radius["count"]} '{radius["spacing"]}'
-
 '**** Define Incident Polarizations ****'
 (0,0) (1.,0.) (0.,0.)
-{polarization["iorth"]} = IORTH
-
+{output_cfg["iorth"]} = IORTH
 '**** Specify which output files to write ****'
-0 = IWRKSC
-
+{output_cfg["write_sca"]} = IWRKSC
 '**** Prescribe Target Rotations ****'
-0.0 0.0 1 = BETAMI BETAMX NBETA
-0.0 0.0 1 = THETMI THETMX NTHETA
-0.0 0.0 1 = PHIMIN PHIMAX NPHI
-
+{beta[0]} {beta[1]} {beta[2]} = BETAMI BETAMX NBETA
+{theta[0]} {theta[1]} {theta[2]} = THETMI THETMX NTHETA
+{phi[0]} {phi[1]} {phi[2]} = PHIMIN PHIMAX NPHI
 '**** Specify first IWAV, IRAD, IORI ****'
 0 0 0
-
 '**** Select Elements of S_ij Matrix to Print ****'
-6 = NSMELTS
-11 12 21 22 31 41
-
+{len(mueller_elements)} = NSMELTS
+{" ".join(str(value) for value in mueller_elements)}
 '**** Specify Scattered Directions ****'
-'LFRAME'
-1
-0.0 0.0 180.0 5.0
+'{scattering["frame"]}'
+{len(planes)}
+{plane_lines}
 """
 
-output = run_directory / "ddscat.par"
-output.write_text(text)
+# ---------------------------------------------------------------------------
+# Write ddscat.par
+# ---------------------------------------------------------------------------
 
-print(f"Wrote {output}")
+output_file = run_directory / "ddscat.par"
+output_file.write_text(text)
+
+print(f"Wrote {output_file}")
